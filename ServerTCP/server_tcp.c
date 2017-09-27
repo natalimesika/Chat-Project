@@ -1,0 +1,566 @@
+#include "server_tcp.h"
+
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>	
+#include <stdlib.h>		  /*malloc*/
+#include <sys/socket.h>   /*for socket*/
+#include <sys/types.h>       
+#include <netinet/in.h>   /*for struct sockaddr_in*/
+#include <string.h>		  /*memset*/
+#include <signal.h>		  /*sigaction*/
+#include <sys/time.h>     /*FD_SET, FD_ISSET, FD_ZERO macros*/
+#include <sys/select.h>	  /*for select*/
+
+#include "list.h" 
+#include "list_itr.h"
+#include "list_functions.h"
+#include "innar.h"
+#include "DataBase.h"
+
+#define FAIL -1
+#define BUFF_SIZE 1024
+#define CLIENTS_LIMIT 1000
+#define MAGIC_NUM 32487344
+
+int stop = 0;
+
+ 
+struct ClientData 
+{
+	int m_clientSock;				  /* The client's socket number */
+	struct timeval m_client_timeout;  /* Cliects experation time */
+	struct sockaddr_in m_clientSin;
+};
+
+
+struct Server
+{
+	int m_masterSocket;     		 /* The listening socket (master socket) */
+	List* m_List_connectedClient;	 /* List of the connected clients */
+	ApplicationFunc m_appFunc;		 /* The application function */
+	fd_set m_forSelect_fds;			 /* Set of socket descriptors- draft*/
+	fd_set m_master_fds;			 /* Set of socket descriptors */
+	struct timeval m_maxWaitTime;    /* The time to wait until experation of a client */
+	struct timeval m_timeout;		 /* Hatching time is refreshed by the time of the last client on the list*/
+	void* m_context;				 /* contex for the ApplicationFunc func*/
+	void* m_buffer_rcv;				 /* This buffer get the recive msg from the application*/
+	int m_activity;					 /* The result from the select*/
+	int m_magicNum;					 /* Magic number*/
+	int m_max_socket;		
+	WelcomeFunc m_acceptFunction;	 /* Welcome new client that connected*/
+	WelcomeFunc m_goodbye;
+	void* m_goodbyeContex;
+	void* m_contexUser;
+	void* m_msg;
+	
+};
+
+
+
+
+static void SignalHandler(int _num )
+{
+	_num = 1;
+	printf("I'm out...\n");
+	stop = 1;
+}
+
+static ClientData* CreateNewClient(int _client_sock, struct sockaddr_in client_sin);
+static struct timeval GetTTL(Server* _server);
+static ListItr Remove_Client_On_timeout(ClientData* client, Server* _server, ListItr _iterBegin);
+static int AddClientToTheList(Server* _server);
+static int InitMasterSocket( int _server_port, int _back_log);
+static int Check_expiry_of_Clients(Server* _server);
+static int CreateSocket();
+static int BindServer(int _sock, int _server_port);
+static ClientData* AcceptClient(Server* _server );
+static int ReceiveAndSend( Server* _server );
+static int ActionFuncSndRcv(ClientData* _client, Server* _server);
+static int Check_list_empty( Server* _server);
+static void SignalHandler(int _num );
+static void elementDestroy(void* _item);
+static void UpdateTimeForClient(Server* _server,ClientData* client );
+
+/***********************************************/
+/*CreateServer*/
+/***********************************************/
+Server* CreateServer(Params _serverParams)
+{
+	if(NULL == _serverParams.m_doSometing || 1024 > _serverParams.m_server_port || 0 == _serverParams.m_maxWaitTime || 128 < _serverParams.m_back_log)
+	{
+		return NULL;	
+	}
+	
+	Server* server = (Server*)malloc(1 * sizeof(Server) );
+	if(NULL == server)
+	{
+		return NULL;
+	}
+	
+	server->m_masterSocket = InitMasterSocket( _serverParams.m_server_port, _serverParams.m_back_log);
+	if( -1 == server->m_masterSocket)
+	{
+		free(server);
+		return NULL;
+	}
+	
+	server->m_List_connectedClient = List_Create();
+	if(NULL == server->m_List_connectedClient)
+	{
+		close(server->m_masterSocket);
+		free(server);
+		return NULL;
+		
+	}
+	
+	timerclear( &server->m_timeout );
+	timerclear( &server->m_maxWaitTime );
+
+	server->m_appFunc = _serverParams.m_doSometing;
+	server->m_context = _serverParams.m_context;
+	server->m_maxWaitTime.tv_sec = _serverParams.m_maxWaitTime;
+	server->m_acceptFunction = _serverParams.m_acceptFunc;
+	server->m_goodbye = _serverParams.m_disconnect;
+	server->m_goodbyeContex = _serverParams.m_contexDisconnect;
+	server->m_contexUser = _serverParams.m_contexAccept;
+	server->m_magicNum = MAGIC_NUM;
+	server->m_max_socket = 0;
+	server->m_activity = 0;
+	server->m_msg = calloc(1, BUFF_SIZE);
+	
+	server->m_buffer_rcv = calloc(1, BUFF_SIZE);
+
+	/*Clear the socket set*/
+	FD_ZERO( &server->m_master_fds );
+	
+	FD_SET(server->m_masterSocket, &server->m_master_fds);
+
+	return server;
+}
+
+		
+/***********************************************/
+/*RunServer   */
+/***********************************************/
+SERVER_ERR RunServer(Server* _server )
+{
+	struct sigaction newAct;
+	struct sigaction oldAct;
+	
+	
+	if(NULL == _server || MAGIC_NUM != _server->m_magicNum)
+	{
+		return SERVER_ALLOCATED_FAIL;
+	}
+
+	newAct.sa_handler = SignalHandler;
+	sigaction(SIGINT, &newAct ,&oldAct);
+	
+	/*The max socket is now the only socket*/
+	_server->m_max_socket = _server->m_masterSocket;
+
+	while(stop == 0)
+	{
+		_server->m_forSelect_fds = _server->m_master_fds;
+		
+		/*if no one wait on the connected line- update timeout */
+		if( 1 == Check_list_empty(_server) )
+		{
+			_server->m_activity = select( _server->m_max_socket + 1 ,&_server->m_forSelect_fds , NULL , NULL ,NULL);	
+		}
+		
+		else
+		{
+			_server->m_timeout = GetTTL(_server);	
+			_server->m_activity = select(_server->m_max_socket + 1 ,&_server->m_forSelect_fds , NULL , NULL , &_server->m_timeout );
+		}
+		
+		if(-1 == _server->m_activity )
+		{
+	        perror("select error");
+	        continue;
+		}
+		
+		else if(0 == _server->m_activity )
+		{
+			Check_expiry_of_Clients( _server );
+	        continue;
+		}
+		 
+	    /*if there is some active on the master, something happend, than is mean that there is incoming connection*/
+	    if( FD_ISSET( _server->m_masterSocket, &_server->m_forSelect_fds )  )
+	    {	
+	    	AddClientToTheList(_server);
+		}
+		
+		if(0 < _server->m_activity )
+		{
+			ReceiveAndSend( _server );
+		}
+	}
+	DestroyServer(_server);
+	
+	return SERVER_SUCCSSES;
+}
+
+
+/***********************************************/
+/*DestroyServer   */
+/***********************************************/
+void DestroyServer(Server* _server )
+{
+	if(NULL == _server || MAGIC_NUM != _server->m_magicNum)
+	{
+		return;
+	}
+	
+	FD_ZERO( &_server->m_master_fds );
+	FD_ZERO( &_server->m_forSelect_fds );
+	
+	List_Destroy(&(_server->m_List_connectedClient), elementDestroy  );
+	close(_server->m_masterSocket);
+	_server->m_masterSocket = 0;
+	free( _server->m_buffer_rcv);
+	free( _server);
+}
+
+/*************************************************************************************************************/
+/*											STATIC FUNC												  		 */
+/*************************************************************************************************************/
+static int Check_expiry_of_Clients(Server* _server)
+{
+	ListItr iterBegin = NULL;
+	ListItr iterEnd = NULL;
+	ClientData* client;
+	struct timeval currentTime;
+	
+	iterBegin = ListItr_Begin( _server->m_List_connectedClient );
+	iterEnd = ListItr_End(  _server->m_List_connectedClient);
+	
+	if(NULL == iterBegin || NULL == iterEnd )
+	{
+		return -1;
+	}
+	
+	/*get the current time*/
+	if ( gettimeofday( &currentTime, NULL ) )
+	{
+		perror("Gettimeofday failed");
+	}
+	
+	while(!ListItr_Equals(iterBegin, iterEnd) )
+	{
+		client = ListItr_Get( iterBegin );
+		
+		/*Timeout - remove the client*/
+		if( timercmp( &currentTime, &client->m_client_timeout, > ) )
+		{
+			iterBegin = Remove_Client_On_timeout( client, _server, iterBegin );
+			free(client);
+		}
+		/*the client have more ttl*/
+		else
+		{
+			return 1;
+		}
+	}
+	return 1;
+}
+
+static ListItr Remove_Client_On_timeout(ClientData* client, Server* _server, ListItr _iterBegin)
+{
+	if( NULL != _server->m_goodbye)
+	{
+		_server->m_goodbye( client, _server->m_goodbyeContex);
+	}
+
+	FD_CLR( client->m_clientSock, &_server->m_master_fds );
+	close(client->m_clientSock);
+	_iterBegin = ListItr_Next(_iterBegin);
+	ListItr_Remove(ListItr_Prev( _iterBegin ) );
+	
+	return _iterBegin;
+}
+
+
+static void elementDestroy(void* _item)
+{
+	ClientData* client = (ClientData*) _item;
+	
+	close(client->m_clientSock);
+	free(client);
+}
+
+static int ReceiveAndSend( Server* _server )
+{
+	ListItr iterBegin = NULL;
+	ListItr iterEnd = NULL;
+	ListItr temp;
+	ClientData* client;
+	
+	iterBegin = ListItr_Begin( _server->m_List_connectedClient );
+	iterEnd = ListItr_End(_server->m_List_connectedClient);
+	
+	if(NULL == iterBegin || NULL == iterEnd )
+	{
+		return -1;
+	}
+	while(!ListItr_Equals(iterBegin, iterEnd) && _server->m_activity > 0)
+	{
+		client = ListItr_Get( iterBegin );
+			
+		if(FD_ISSET( client->m_clientSock, &_server->m_forSelect_fds ) )
+		{
+			--_server->m_activity;
+		
+			if( -1 == ActionFuncSndRcv( client , _server) )
+			{			
+				temp = iterBegin;
+			 	client = ListItr_Remove( temp);
+		 		FD_CLR( client->m_clientSock ,&_server->m_master_fds);
+			 	free(client);	
+				iterBegin = ListItr_Next(iterBegin);
+				continue;
+			}
+			
+			else
+			{
+				iterBegin = ListItr_Next(iterBegin);			
+				client = ListItr_Remove( ListItr_Prev(iterBegin) );
+				List_PushHead( _server->m_List_connectedClient ,client );
+				continue;
+			}
+		}
+		iterBegin = ListItr_Next(iterBegin);
+	}
+	return 0;
+}
+
+
+static int ActionFuncSndRcv(ClientData* _client, Server* _server)
+{
+	void* server_message = NULL;
+	ssize_t msgLength;
+
+	msgLength = recv( _client->m_clientSock, _server->m_buffer_rcv, BUFF_SIZE, 0 );
+	if( 0 >=  msgLength )
+	{
+		if( NULL != _server->m_goodbye)
+		{
+			_server->m_goodbye( _client, _server->m_goodbyeContex);
+		}
+		
+		close( _client->m_clientSock );
+		return -1;
+	}	
+	
+	/*The app!*/
+	server_message = _server->m_appFunc( _server->m_buffer_rcv, _server->m_context, _client->m_clientSock);
+
+	if( 0 > send( _client->m_clientSock , server_message, BUFF_SIZE, 0 ) ) 
+	{
+		perror("send");
+		close( _client->m_clientSock );
+		
+		return -1;
+	}
+	
+	UpdateTimeForClient( _server, _client);
+	
+	return 0;
+
+}
+
+
+static void UpdateTimeForClient(Server* _server, ClientData* client )
+{
+	if( 0 != gettimeofday( &client->m_client_timeout , NULL ))
+	{	
+		perror("gettimeofday error");
+	}
+	timeradd(&client->m_client_timeout, &_server->m_maxWaitTime, &client->m_client_timeout);
+	
+}
+
+
+static int CreateSocket()
+{
+	int sock = 0;
+	
+	sock = socket(AF_INET, SOCK_STREAM, 0);
+	
+	return sock;
+}
+
+
+static int BindServer(int _sock, int _server_port)
+{
+	struct sockaddr_in server_sin;
+	
+	memset( &server_sin, 0, sizeof(server_sin) );
+
+	server_sin.sin_family = AF_INET;
+	server_sin.sin_addr.s_addr = INADDR_ANY;
+	server_sin.sin_port = htons( _server_port );
+	
+	if(0 > bind(_sock, (struct sockaddr*)&server_sin, sizeof(server_sin) ) )
+	{
+		perror("bind failed");
+		return 0;
+	}
+	
+	return 1;	
+}
+
+
+static ClientData* AcceptClient(Server* _server )
+{
+	int client_sock = 0;
+	int numOfClient;
+	struct sockaddr_in client_sin;
+	socklen_t add_len = sizeof(client_sin);	
+	ClientData* newClient = NULL;
+		
+	client_sock = accept(_server->m_masterSocket, (struct sockaddr*)&client_sin, &add_len );
+	if(0 > client_sock)
+	{
+		close(client_sock);
+		return NULL;	
+	}
+	
+	numOfClient = List_Size( _server->m_List_connectedClient );
+	if(CLIENTS_LIMIT < numOfClient)
+	{
+		close(client_sock);
+		return NULL;
+	}
+	
+	FD_SET( client_sock , &_server->m_master_fds);
+	/*if the number is bigger than the master socket- than this socket will be the max socket */
+	if( client_sock > _server->m_max_socket)
+	{
+		_server->m_max_socket = client_sock;
+	}
+	
+	newClient = CreateNewClient( client_sock, client_sin );
+	if( NULL == newClient)
+	{
+		close(client_sock);
+		free(newClient);
+		return NULL;
+	}
+	
+	/*welcome the client*/
+	if( NULL != _server->m_acceptFunction)
+	{
+		_server->m_acceptFunction( newClient, _server->m_contexUser );
+	}
+
+	return newClient;
+}
+
+static ClientData* CreateNewClient(int _client_sock, struct sockaddr_in client_sin)
+{
+	ClientData* client = (ClientData*)malloc(1 * sizeof(ClientData) );
+	if(NULL == client)
+	{
+		return NULL;
+	}
+	
+	client->m_clientSock = _client_sock;
+	client->m_clientSin = client_sin;
+	
+	return client;
+}
+
+static int AddClientToTheList(Server* _server)
+{
+	ClientData* newClient = NULL;
+	int res = 0;
+	
+	newClient = AcceptClient( _server);
+	if(NULL != newClient)
+	{
+		UpdateTimeForClient( _server, newClient );
+	
+		res = List_PushTail( _server->m_List_connectedClient, newClient);
+		if(LIST_SUCCESS != res)
+		{
+			free(newClient);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+
+
+static int Check_list_empty( Server* _server )
+{	
+	/*if list is empty*/
+	if( 0 == List_Size( _server->m_List_connectedClient ) )
+	{
+		return 1;
+	}
+	else
+	{
+		return 0;
+	}
+	
+	return -1;
+}
+
+static int InitMasterSocket( int _server_port, int _back_log)
+{
+	int sock = 0;
+	int val = 1;
+	
+	sock =  CreateSocket();
+	
+	if(0 > setsockopt( sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) )
+	{
+		perror("setsockopt falied");
+	
+		return -1;		
+	}	
+	
+	if(0 > BindServer(sock , _server_port) )
+	{
+		close(sock);
+		return -1;
+	}
+
+	if(0 > listen(sock ,_back_log ) )
+	{
+		close(sock);
+		perror("listen fail");
+	
+		return -1;
+	}
+	
+	return sock;
+}
+
+/*Get the current time , get the time of the oldest client in the list and return the sub of the time of the client and the current time*/
+static struct timeval GetTTL(Server* _server)
+{
+	ListItr iterBegin = NULL;
+	ClientData* client;
+	struct timeval currentTime;
+	struct timeval ttl;
+	
+	if ( gettimeofday( &currentTime, NULL ) )
+	{
+		perror("Gettimeofday failed");
+	}
+	
+	iterBegin = ListItr_Begin( _server->m_List_connectedClient );
+	
+	client = ListItr_Get( iterBegin );
+	
+	timersub(& client->m_client_timeout, &currentTime, &ttl);
+
+	return ttl;
+}
+

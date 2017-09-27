@@ -1,0 +1,31 @@
+#include "UI.h"
+
+#include <stdio.h>
+
+#define IP_ADDRESS_LEN 17
+
+int main()
+{
+
+	Client_Interface* newChat;
+	int serverPort;
+	char serverIP[IP_ADDRESS_LEN];
+	
+	/*printf("IP:\n");
+	scanf("%s", serverIP );
+	*/
+	printf("port:\n");
+	scanf("%d", &serverPort );
+	
+	newChat = CreateCommunication( serverPort, serverIP);
+	
+	RunUI( newChat );
+	
+	return 0;
+}
+
+
+
+
+
+

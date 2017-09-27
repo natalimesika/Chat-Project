@@ -1,0 +1,56 @@
+
+#define IP_LEN
+
+struct ClientData 
+{
+	int m_clientSock;				  /* The client's socket number */
+	struct timeval m_client_timeout;  /* Cliects experation time */
+	struct sockaddr_in m_clientSin;
+};
+
+
+void* WelcomeNewClient( ClientData* _client, void* _contexUser)
+{
+	printf("Client connect \n");
+
+	return _client;
+}
+
+void* ClientDisconnected( ClientData* _client, void* _contexUser)
+{
+	printf("Client disconnect \n");
+
+	return _contexUser;
+}
+
+void RunServerSide()
+{
+	DataBase* dataBase;
+	Params serverParams;
+	Server* server;
+	int port;
+	
+	dataBase = CreateMainDataBase();
+	if( NULL == dataBase )
+	{
+		return 0;		
+	}
+	printf("Port:\n");
+	scanf("%d", &port);
+	
+	serverParams.m_back_log = 11;
+	serverParams.m_server_port = port;
+	serverParams.m_doSometing = GetFromClientAndSendToServer;
+	serverParams.m_context = dataBase;			/*Pointer to the data base*/
+
+	serverParams.m_maxWaitTime = 300;
+	serverParams.m_acceptFunc = WelcomeNewClient;
+	serverParams.m_contexAccept = NULL;
+	serverParams.m_disconnect = ClientDisconnected;
+	serverParams.m_contexDisconnect = NULL;
+
+	server = CreateServer( serverParams );
+
+	RunServer(server);
+}
+

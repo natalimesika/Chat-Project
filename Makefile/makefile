@@ -1,0 +1,113 @@
+CFLAG=-c -Wall -g  
+CC=gcc
+INCS=-I../Client -I../Protocol -I../UI -I../ClientServerComm -I../ListFunction -I../GeneticListIter -I../GenericDLinkedList -I../ServerTCP -I../Server -I../GenericHash -I../ServerDB -I../ServerApp -I../PoolAddr -I../GenericQueue -I../Main -I../senderChat -I../ListenChat
+OBJ_CLIENT=Protocol.o Client.o UI.o ClientServerComm.o ClientMain.o GenericHash.o LinkedListGeneric.o LinkedListGenericIter.o ListFunctionGen.o
+OBJ_SERVER= GenericHash.o LinkedListGeneric.o LinkedListGenericIter.o ListFunctionGen.o server_tcp.o  ServerApp.o GenericQueue.o PoolMultyCastAdd.o DataBase.o createChat.o Protocol.o ServerSide.o
+OBJ_SEND=SenderProgram.o
+OBJ_LISTEN=ListenerProgram.o
+
+run_all:client server sender listen
+
+allc: client 
+
+
+client: $(OBJ_CLIENT) 
+	$(CC) -o client.out $(OBJ_CLIENT)
+
+UI.o: ../UI/UI.c ../Client/Client.h
+	$(CC) $(CFLAG) $(INCS)  ../UI/UI.c
+
+
+Client.o: ../Client/Client.c ../Client/Client.h ../Protocol/Protocol.h ../ClientServerComm/ClientServerComm.h ../GenericHash/HashMap.h ../GeneticListIter/list_itr.h ../GenericDLinkedList/list.h ../GeneticListIter/innar.h ../ListFunction/list_functions.h
+	$(CC) $(CFLAG) $(INCS)  ../Client/Client.c
+	
+	
+Protocol.o:	../Protocol/Protocol.c ../Protocol/Protocol.h
+	$(CC) $(CFLAG) $(INCS)  ../Protocol/Protocol.c
+
+
+ClientServerComm.o: ../ClientServerComm/ClientServerComm.c ../ClientServerComm/ClientServerComm.h
+	$(CC) $(CFLAG) $(INCS)   ../ClientServerComm/ClientServerComm.c
+	
+	
+ClientMain.o: ../Main/ClientMain.c ../UI/UI.h
+	$(CC) $(CFLAG) $(INCS) ../Main/ClientMain.c  ../UI/UI.h 
+	
+#server_side
+
+alls: server
+
+server: $(OBJ_SERVER) 
+	$(CC) -o server.out $(OBJ_SERVER)
+
+
+server_tcp.o: ../ServerTCP/server_tcp.c ../ServerTCP/server_tcp.h  ../GeneticListIter/list_itr.h ../GenericDLinkedList/list.h ../GeneticListIter/innar.h ../ListFunction/list_functions.h
+	$(CC) $(CFLAG) $(INCS) ../ServerTCP/server_tcp.c
+
+
+
+ServerApp.o: ../ServerApp/ServerApp.c ../ServerApp/ServerApp.h  ../Protocol/Protocol.h
+	$(CC) $(CFLAG) $(INCS) ../ServerApp/ServerApp.c
+	
+
+ServerSide.o: ../ServerMain/ServerSide.c ../ServerMain/ServerSide.h
+	$(CC) $(CFLAG) $(INCS) ../ServerMain/ServerSide.c 
+	
+	
+LinkedListGeneric.o: ../GenericDLinkedList/LinkedListGeneric.c  ../GenericDLinkedList/list.h  ../GenericDLinkedList/innar.h 
+	$(CC) $(CFLAG) $(INCS) ../GenericDLinkedList/LinkedListGeneric.c
+	
+	
+LinkedListGenericIter.o: ../GeneticListIter/LinkedListGenericIter.c ../GeneticListIter/list_itr.h ../GenericDLinkedList/list.h ../GeneticListIter/innar.h
+	$(CC) $(CFLAG) $(INCS) ../GeneticListIter/LinkedListGenericIter.c 
+
+
+ListFunctionGen.o: ../ListFunction/ListFunctionGen.c ../GeneticListIter/list_itr.h ../GenericDLinkedList/list.h ../GeneticListIter/innar.h ../ListFunction/list_functions.h
+	$(CC) $(CFLAG) $(INCS) ../ListFunction/ListFunctionGen.c 
+
+
+GenericHash.o: ../GenericHash/GenericHash.c ../GenericHash/HashMap.h ../GeneticListIter/list_itr.h ../GenericDLinkedList/list.h ../GeneticListIter/innar.h ../ListFunction/list_functions.h
+	$(CC) $(CFLAG) $(INCS) ../GenericHash/GenericHash.c 
+
+
+PoolMultyCastAdd.o: ../PoolAddr/PoolMultyCastAdd.c ../PoolAddr/PoolMultyCastAdd.h ../GenericQueue/GenericQueue.h
+	$(CC) $(CFLAG) $(INCS) ../PoolAddr/PoolMultyCastAdd.c
+
+
+
+GenericQueue.o: ../GenericQueue/GenericQueue.c ../GenericQueue/GenericQueue.h
+	$(CC) $(CFLAG) $(INCS) ../GenericQueue/GenericQueue.c
+
+
+DataBase.o: ../ServerDB/DataBase.c ../ServerDB/DataBase.h ../GenericHash/HashMap.h ../GeneticListIter/list_itr.h ../GenericDLinkedList/list.h ../GeneticListIter/innar.h ../ListFunction/list_functions.h ../PoolAddr/PoolMultyCastAdd.h 
+	$(CC) $(CFLAG) $(INCS) ../ServerDB/DataBase.c 
+
+
+createChat.o: ../ServerMain/createChat.c ../ServerMain/ServerSide.c 
+	$(CC) $(CFLAG) $(INCS) ../ServerMain/createChat.c
+
+
+
+#sender
+
+all_sender: sender
+
+sender: $(OBJ_SEND) 
+	$(CC) -o sender.out $(OBJ_SEND)
+
+SenderProgram.o: ../senderChat/SenderProgram.c 
+	$(CC) $(CFLAG) $(INCS) ../senderChat/SenderProgram.c 
+	
+
+
+
+all_listen: listen
+
+listen: $(OBJ_LISTEN) 
+	$(CC) -o listen.out $(OBJ_LISTEN)
+
+ListenerProgram.o: ../ListenChat/ListenerProgram.c 
+	$(CC) $(CFLAG) $(INCS) ../ListenChat/ListenerProgram.c
+make clean: 
+	rm *.o *.out
+
